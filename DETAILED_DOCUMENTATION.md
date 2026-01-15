@@ -49,14 +49,169 @@ When opening a new business (like a cafe, restaurant, gym, etc.), location is cr
 
 ## 3. How the System Works (High-Level Flow)
 
+### System Architecture Diagram
+
 ```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                              USER INPUT                                  │
-│    (City name or Coordinates, Business Type, Search Radius, Weights)    │
-└─────────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                            SYSTEM ARCHITECTURE                                   │
+└─────────────────────────────────────────────────────────────────────────────────┘
+
+                    ┌─────────────────────────────────────┐
+                    │           USER INTERFACE             │
+                    │  ┌─────────────┐ ┌───────────────┐  │
+                    │  │  Streamlit  │ │  CLI (main.py)│  │
+                    │  │  Dashboard  │ │  Terminal     │  │
+                    │  │  (app.py)   │ │  Interface    │  │
+                    │  └──────┬──────┘ └───────┬───────┘  │
+                    └─────────┼────────────────┼──────────┘
+                              │                │
+                              ▼                ▼
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                         PIPELINE ORCHESTRATOR                                    │
+│                    run_analysis_pipeline() in app.py                             │
+│  Coordinates all modules: Fetch → Clean → Cluster → Score → Visualize → Report  │
+└─────────────────────────────────────────────────────────────────────────────────┘
+                                      │
+          ┌───────────────────────────┼───────────────────────────┐
+          │                           │                           │
+          ▼                           ▼                           ▼
+┌──────────────────┐      ┌────────────────────┐      ┌──────────────────────┐
+│  DATA LAYER      │      │  PROCESSING LAYER  │      │  OUTPUT LAYER        │
+│                  │      │                    │      │                      │
+│  ┌────────────┐  │      │  ┌──────────────┐  │      │  ┌────────────────┐  │
+│  │ fetch_data │  │ ───▶ │  │ clean_data   │  │ ───▶ │  │ visualize.py   │  │
+│  │ .py        │  │      │  │ .py          │  │      │  │ (Maps, Charts) │  │
+│  └────────────┘  │      │  └──────────────┘  │      │  └────────────────┘  │
+│        │         │      │        │           │      │         │            │
+│        │         │      │        ▼           │      │         ▼            │
+│        ▼         │      │  ┌──────────────┐  │      │  ┌────────────────┐  │
+│  ┌────────────┐  │      │  │ clustering   │  │      │  │report_generator│  │
+│  │ OpenStreet │  │      │  │ .py (DBSCAN) │  │      │  │.py (PDF)       │  │
+│  │ Map API    │  │      │  └──────────────┘  │      │  └────────────────┘  │
+│  │ (OSMnx)    │  │      │        │           │      │                      │
+│  └────────────┘  │      │        ▼           │      │  ┌────────────────┐  │
+│                  │      │  ┌──────────────┐  │      │  │ recommendations│  │
+│  ┌────────────┐  │      │  │ scoring.py   │  │ ───▶ │  │ .py            │  │
+│  │ Cache      │  │      │  │ (KD-Tree)    │  │      │  └────────────────┘  │
+│  │ /cache/    │  │      │  └──────────────┘  │      │                      │
+│  └────────────┘  │      │                    │      │                      │
+└──────────────────┘      └────────────────────┘      └──────────────────────┘
+          │                           │                           │
+          ▼                           ▼                           ▼
+┌──────────────────────────────────────────────────────────────────────────────────┐
+│                              STORAGE LAYER                                        │
+│  ┌──────────────────┐  ┌──────────────────┐  ┌──────────────────────────────┐    │
+│  │     /data/       │  │     /maps/       │  │       /cache/                │    │
+│  │  raw_data.csv    │  │  all_pois_map    │  │  osmnx/ (API responses)      │    │
+│  │  cleaned_data    │  │  cluster_map     │  │  bulk/  (cached queries)     │    │
+│  │  clusters.csv    │  │  heatmap.html    │  │                              │    │
+│  │  location_scores │  │  recommendations │  │                              │    │
+│  │  report.pdf      │  │  *.png exports   │  │                              │    │
+│  └──────────────────┘  └──────────────────┘  └──────────────────────────────┘    │
+└──────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Module Interaction Flow
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                          DETAILED MODULE FLOW                                    │
+└─────────────────────────────────────────────────────────────────────────────────┘
+
+User Input: "Bangalore", "cafe", 5km radius, weights={demand:0.4, competition:0.3, ...}
                                     │
                                     ▼
-┌─────────────────────────────────────────────────────────────────────────┐
+┌───────────────────────────────────────────────────────────────────────────────┐
+│  DataFetcher                                                                   │
+│  ────────────                                                                  │
+│  1. geocode("Bangalore") → (12.9716, 77.5946)                                 │
+│  2. Build OSM query for: cafe, restaurant, bank, hospital, school, etc.       │
+│  3. Call Overpass API via OSMnx                                               │
+│  4. Cache response in /cache/bulk/                                            │
+│  5. Output: GeoDataFrame with ~1500 POIs                                       │
+│                                                                                │
+│  Example Output (actual counts will vary based on city/radius):                │
+│  ┌────────────────┬───────────┬──────────┬───────────┐                        │
+│  │ name           │ category  │ latitude │ longitude │                        │
+│  ├────────────────┼───────────┼──────────┼───────────┤                        │
+│  │ Starbucks      │ cafe      │ 12.9716  │ 77.5946   │                        │
+│  │ SBI Bank       │ bank      │ 12.9720  │ 77.5950   │                        │
+│  │ Apollo Hospital│ hospital  │ 12.9725  │ 77.5960   │                        │
+│  └────────────────┴───────────┴──────────┴───────────┘                        │
+└───────────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌───────────────────────────────────────────────────────────────────────────────┐
+│  DataCleaner                                                                   │
+│  ───────────                                                                   │
+│  1. Remove duplicates (same lat/lon + name)                                   │
+│  2. Validate coordinates (-90 to 90 lat, -180 to 180 lon)                     │
+│  3. Normalize categories: coffee_shop → cafe, fast_food → restaurant          │
+│  4. Add category_group: cafe→cafe, bank→finance, hospital→healthcare          │
+│  5. Output: Cleaned GeoDataFrame (typically 90-95% retention after dedup)      │
+└───────────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌───────────────────────────────────────────────────────────────────────────────┐
+│  GeoClusterer                                                                  │
+│  ────────────                                                                  │
+│  1. Convert lat/lon to radians for haversine distance                         │
+│  2. Run DBSCAN: eps=0.5km, min_samples=5                                      │
+│  3. Label each POI with cluster_id (-1 = noise)                               │
+│  4. Identify hotspots (top 25% by density)                                    │
+│  5. Identify sparse regions (low POI count grid cells)                        │
+│                                                                                │
+│  Example Output: 10-20 clusters, noise points vary, hotspots in dense areas   │
+└───────────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌───────────────────────────────────────────────────────────────────────────────┐
+│  LocationScorer                                                                │
+│  ──────────────                                                                │
+│  1. Generate grid of candidate points within search radius (default 15×15)    │
+│  2. For each candidate point (distances/weights are configurable):             │
+│     ┌─────────────────────────────────────────────────────────────────────┐   │
+│     │  • Count supporting POIs within radius → Demand Score               │   │
+│     │  • Count competitor POIs within radius → Competition Score (inverse)│   │
+│     │  • Count transport POIs within radius → Accessibility Score         │   │
+│     │  • Count essential services within radius → Infrastructure Score    │   │
+│     └─────────────────────────────────────────────────────────────────────┘   │
+│  3. Apply user-configurable weights: w1×demand + w2×comp + w3×access + w4×inf │
+│  4. Rank all candidates by final score                                         │
+│  5. Output: Top 10 recommended locations with coordinates and scores          │
+└───────────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌───────────────────────────────────────────────────────────────────────────────┐
+│  MapVisualizer                                                                 │
+│  ─────────────                                                                 │
+│  Creates 5 interactive maps using Folium:                                      │
+│  ┌─────────────────────┬──────────────────────────────────────────────────┐   │
+│  │ all_pois_map.html   │ All POIs with marker clustering                  │   │
+│  │ cluster_map.html    │ Color-coded clusters with labels                 │   │
+│  │ heatmap.html        │ POI density heatmap (blue→red gradient)          │   │
+│  │ competition_heatmap │ Competitor concentration                         │   │
+│  │ recommendations_map │ Top 10 locations with gold/green markers         │   │
+│  └─────────────────────┴──────────────────────────────────────────────────┘   │
+└───────────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌───────────────────────────────────────────────────────────────────────────────┐
+│  ReportGenerator                                                               │
+│  ───────────────                                                               │
+│  Generates PDF report with:                                                    │
+│  • Title page with city, business type, date                                   │
+│  • Executive summary with key findings                                         │
+│  • Methodology section explaining scoring                                      │
+│  • Top 10 recommended locations table                                          │
+│  • Conclusion with actionable insights                                         │
+└───────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Data Pipeline Flowchart
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
 │  STEP 1: DATA FETCHING (fetch_data.py)                                  │
 │  - Geocodes city name to coordinates                                    │
 │  - Fetches POIs (restaurants, cafes, banks, schools, etc.)              │
@@ -348,6 +503,80 @@ Final Score = w1 * Demand + w2 * Competition + w3 * Accessibility + w4 * Infrast
 | **Competition** | Competitor presence | INVERSE of competitor count within 0.5km. Fewer competitors = higher score |
 | **Accessibility** | Transport access | Count of bus stations, parking, fuel stations nearby |
 | **Infrastructure** | Essential services | Count of hospitals, banks, schools, pharmacies nearby |
+
+---
+
+### 📊 Score Component Examples
+
+#### Example Scenario: Opening a CAFE in Bangalore
+
+**Location A: MG Road (Commercial Hub)**
+```
+Nearby POIs within search radius:
+- 15 shops, 8 restaurants, 3 malls, 2 hotels
+- 12 existing cafes (competitors)
+- 4 bus stations, 2 metro stations, 5 parking lots
+- 3 banks, 1 hospital, 2 schools
+```
+
+| Score | Calculation | Result |
+|-------|-------------|--------|
+| **Demand** | 15+8+3+2 = 28 supporting POIs → High foot traffic | **0.85** |
+| **Competition** | 12 cafes nearby → High competition | **0.35** |
+| **Accessibility** | 4+2+5 = 11 transport points → Excellent | **0.90** |
+| **Infrastructure** | 3+1+2 = 6 essential services | **0.70** |
+| **Final Score** | 0.4×0.85 + 0.3×0.35 + 0.2×0.90 + 0.1×0.70 = **0.695** | Rank: #3 |
+
+---
+
+**Location B: Residential Area (Jayanagar)**
+```
+Nearby POIs within search radius:
+- 5 shops, 2 restaurants, 0 malls, 0 hotels
+- 2 existing cafes (competitors)
+- 2 bus stations, 0 metro, 1 parking lot
+- 2 banks, 0 hospitals, 4 schools
+```
+
+| Score | Calculation | Result |
+|-------|-------------|--------|
+| **Demand** | 5+2+0+0 = 7 supporting POIs → Lower foot traffic | **0.45** |
+| **Competition** | 2 cafes nearby → Low competition ✓ | **0.85** |
+| **Accessibility** | 2+0+1 = 3 transport points → Moderate | **0.50** |
+| **Infrastructure** | 2+0+4 = 6 essential services | **0.70** |
+| **Final Score** | 0.4×0.45 + 0.3×0.85 + 0.2×0.50 + 0.1×0.70 = **0.605** | Rank: #8 |
+
+---
+
+**Location C: IT Park Area (Whitefield)**
+```
+Nearby POIs within search radius:
+- 20 shops, 12 restaurants, 2 malls, 5 hotels
+- 3 existing cafes (competitors)
+- 6 bus stations, 1 metro, 8 parking lots
+- 5 banks, 2 hospitals, 3 schools
+```
+
+| Score | Calculation | Result |
+|-------|-------------|--------|
+| **Demand** | 20+12+2+5 = 39 supporting POIs → Very high! | **0.95** |
+| **Competition** | 3 cafes nearby → Low competition ✓ | **0.80** |
+| **Accessibility** | 6+1+8 = 15 transport points → Excellent | **0.95** |
+| **Infrastructure** | 5+2+3 = 10 essential services | **0.85** |
+| **Final Score** | 0.4×0.95 + 0.3×0.80 + 0.2×0.95 + 0.1×0.85 = **0.895** | Rank: #1 🏆 |
+
+---
+
+### 💡 Key Insights from Examples:
+
+| Insight | Explanation |
+|---------|-------------|
+| **Location C wins** | High demand + low competition + great accessibility = best score |
+| **Location A is risky** | High demand but 12 competitors hurt the score significantly |
+| **Location B is underserved** | Low competition but also low foot traffic |
+| **Competition matters** | At 30% weight, 12 vs 3 cafes can swing scores by 0.15 points |
+
+---
 
 **Candidate Generation:**
 - Creates a grid of points within the search radius
