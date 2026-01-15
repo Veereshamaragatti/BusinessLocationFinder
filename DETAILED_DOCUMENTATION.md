@@ -331,7 +331,7 @@ labels = clusterer.dbscan_clustering(coords, eps_km=0.5, min_samples=5)
 
 **The Scoring Formula:**
 ```
-Final Score = w₁ × Demand + w₂ × Competition + w₃ × Accessibility + w₄ × Infrastructure
+Final Score = w1 * Demand + w2 * Competition + w3 * Accessibility + w4 * Infrastructure
 ```
 
 **Default Weights:**
@@ -476,7 +476,7 @@ def haversine_distance(point1, point2):
     dlat = lat2 - lat1
     dlon = lon2 - lon1
     
-    a = sin(dlat/2)² + cos(lat1) * cos(lat2) * sin(dlon/2)²
+    a = sin(dlat/2)**2 + cos(lat1) * cos(lat2) * sin(dlon/2)**2
     c = 2 * arcsin(sqrt(a))
     
     return EARTH_RADIUS_KM * c  # 6371.0 km
